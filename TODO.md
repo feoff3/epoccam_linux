@@ -4,6 +4,8 @@
 3, install loopback devices, document the process
 4. test with loopback devices
 5. try several linux distro's and apps (e.g. Skype\Zoom)
+6. prepare and release prebuild binary
+7. write instructions
 
 #### deps
 1. v4l loopback
