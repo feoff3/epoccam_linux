@@ -45,7 +45,11 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/stat.h>
+#include <dirent.h>
+
+#ifdef EPOCCAM_GUI
 #include <gtk/gtk.h>
+#endif
 
 #ifndef PREFIX
 #define PREFIX "/usr"
@@ -56,10 +60,16 @@
 #define PATH_ICON_RECORDING PATH_PIXMAPS "/icon_recording.png"
 #define FFMPEG "ffmpeg"
 
+
 // Ctrl-C handler
 void signal_handler(int __UNUSED) {
+#ifdef EPOCCAM_GUI
     gtk_main_quit();
+#else
+    exit(0);
+#endif 
 }
+
 
 // Message constants
 #define MAGIC_CONST			0xDEADC0DE
@@ -371,10 +381,14 @@ typedef struct {
     app_t proc_video;
     app_t proc_audio;
     char* v4l_device;
+#ifdef EPOCCAM_GUI
     GtkStatusIcon* icon;
+#endif
 } ec_t;
 
+
 static void update_icon(ec_t* e) {
+#ifdef EPOCCAM_GUI
     if(e->streaming)
         gtk_status_icon_set_from_file(e->icon, PATH_ICON_RECORDING);
     else if(e->current_client != -1)
@@ -388,6 +402,7 @@ static void update_icon(ec_t* e) {
             }
         }
     }
+#endif
 }
 
 void ec_disconnect(ec_t* e, int client_index) {
@@ -416,8 +431,10 @@ void ec_disconnect(ec_t* e, int client_index) {
 
     close(e->clients[client_index].sd);
     e->clients[client_index].sd = 0;
+#ifdef EPOCCAM_GUI
     if(e->clients[client_index].loop_tag)
         gtk_input_remove(e->clients[client_index].loop_tag);
+#endif
 
     update_icon(e);
 }
@@ -494,6 +511,7 @@ void ec_handle(ec_t* e, int client_index) {
     }
 }
 
+#ifdef EPOCCAM_GUI
 void handle_client(gpointer data, gint src, GdkInputCondition cond) {
     ec_t* e = data;
     for(int i=0; i < MAX_CLIENTS; ++i) {
@@ -503,6 +521,7 @@ void handle_client(gpointer data, gint src, GdkInputCondition cond) {
         }
     }
 }
+#endif
 
 void ec_start(ec_t* e, int client_index) {
     client_t* client = &e->clients[client_index];
@@ -521,10 +540,13 @@ void ec_start(ec_t* e, int client_index) {
     e->streaming = 1;
 
     // TODO: pass correct codec types depending on available stream
+#ifdef V4L_LOOPBACK
     app_start(&e->proc_video, (char*[]){FFMPEG, "-an", "-vcodec", "h264", "-i", "-", "-f", "v4l2", e->v4l_device, NULL});
+#endif
+#ifdef ALSA_LOOPBACK
     if(client->audio_index >= 0)
         app_start(&e->proc_audio, (char*[]){FFMPEG, "-vn", "-acodec", "aac", "-i", "-", "-f", "alsa", "plughw:Loopback,1", NULL});
-
+#endif
     update_icon(e);
 }
 
@@ -535,7 +557,9 @@ void ec_join(ec_t* e) {
             e->clients[i].video_index = -1;
             e->clients[i].audio_index = -1;
             fcntl(e->clients[i].sd, F_SETFL, fcntl(e->clients[i].sd, F_GETFL) | O_NONBLOCK);
+#ifdef EPOCCAM_GUI
             e->clients[i].loop_tag = gdk_input_add(e->clients[i].sd, GDK_INPUT_READ, handle_client, e);
+#endif
             if(e->current_client == -1)
                 e->current_client = i;
             update_icon(e);
@@ -543,9 +567,11 @@ void ec_join(ec_t* e) {
         }
     }
 }
+#ifdef EPOCCAM_GUI
 void handle_server(gpointer data, gint src, GdkInputCondition cond) {
     ec_join((ec_t*) data);
 }
+#endif
 
 
 
@@ -557,12 +583,15 @@ int ec_init(ec_t* e) {
     if(server_init(&e->server))
         return -1;
 
+#ifdef V4L_LOOPBACK
     e->v4l_device = v4l2_probe();
+#endif
 
     e->current_client = -1;
     e->streaming = 0;
-
+#ifdef EPOCCAM_GUI
     gdk_input_add(e->server.sd, GDK_INPUT_READ, handle_server, e);
+#endif
     return 0;
 }
 
@@ -579,6 +608,7 @@ void ec_cleanup(ec_t* e) {
 
 // -------- UI signal handlers
 
+#ifdef EPOCCAM_GUI
 #define SETQ(o,s,v) g_object_set_qdata(G_OBJECT(o), g_quark_from_static_string(s), (gpointer)(uint64_t)(v))
 #define GETQ(o,s) (int)(uint64_t)g_object_get_qdata(G_OBJECT(o), g_quark_from_static_string(s))
 
@@ -652,31 +682,41 @@ static gboolean popup_menu(GtkStatusIcon* status_icon, guint button, guint activ
     g_object_ref_sink(menu);
     return TRUE;
 }
+#endif
 // -------- main function, select loop
 
 int main(int argc, char** argv) {
     ec_t e = { 0 };
 
+#ifdef EPOCCAM_GUI
     gtk_init(&argc, &argv);
+#endif
     signal(SIGINT, signal_handler);
 
+#ifdef V4L_LOOPBACK
     if(system("lsmod|grep -q v4l2loopback") != 0) {
         fprintf(stderr, "Could not find v4l2loopback in lsmod, attempt to modprobe...\n");
         if(system("pkexec modprobe v4l2loopback")) {
+#ifdef EPOCCAM_GUI
             GtkWidget* dialog = gtk_message_dialog_new (NULL, GTK_DIALOG_DESTROY_WITH_PARENT, GTK_MESSAGE_ERROR, GTK_BUTTONS_CLOSE, "Could not load v4l2loopback kernel module");
             gtk_dialog_run (GTK_DIALOG (dialog));
             gtk_widget_destroy (dialog);
+#endif
             return 1;
         }
     }
+#endif
 
+#ifdef ALSA_LOOPBACK
     if(system("lsmod|grep -q snd_aloop") != 0) {
         fprintf(stderr, "Could not find snd_aloop in lsmod, continuing anyway\n");
     }
+#endif
 
     if(ec_init(&e))
         return -1;
 
+#ifdef EPOCCAM_GUI
     GtkStatusIcon* icon = gtk_status_icon_new_from_file(PATH_ICON_DEFAULT);
     gtk_status_icon_set_visible(icon, TRUE);
     g_signal_connect(icon, "popup-menu", G_CALLBACK(popup_menu), &e);
@@ -684,6 +724,7 @@ int main(int argc, char** argv) {
     update_icon(&e);
 
     gtk_main();
+#endif
 
     ec_cleanup(&e);
     return 0;
